@@ -1,0 +1,44 @@
+# Hysteria2 server - QUIC/UDP 443, Salamander obfuscation, self-signed TLS.
+# Users (auth.userpass) are managed by `vpn-user`; it starts empty.
+listen: :443
+
+tls:
+  cert: /etc/hysteria/server.crt
+  key: /etc/hysteria/server.key
+
+# Salamander obfuscation: wraps QUIC so DPI can't fingerprint it as Hysteria/QUIC.
+obfs:
+  type: salamander
+  salamander:
+    password: __OBFS_PASSWORD__
+
+auth:
+  type: userpass
+  userpass: {}
+
+# If probed with a real browser (HTTP/3), serve the cover site instead.
+masquerade:
+  type: proxy
+  proxy:
+    url: __MASQUERADE_URL__
+    rewriteHost: true
+  listenHTTPS: ""
+
+quic:
+  initStreamReceiveWindow: 8388608
+  maxStreamReceiveWindow: 8388608
+  initConnReceiveWindow: 20971520
+  maxConnReceiveWindow: 20971520
+  maxIdleTimeout: 30s
+  keepAliveInterval: 10s
+
+bandwidth:
+  up: 200 mbps
+  down: 200 mbps
+
+ignoreClientBandwidth: false
+
+# Per-user traffic stats (read by the portal monitor). Localhost only.
+trafficStats:
+  listen: 127.0.0.1:9999
+  secret: __HY_STATS_SECRET__

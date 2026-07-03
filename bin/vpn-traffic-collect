@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+"""Sample per-user VPN traffic counters and store positive deltas in SQLite.
+
+Xray (expvar) and Hysteria2 (trafficStats) expose cumulative byte counters that reset when
+the service restarts (which happens on every `vpn-user` change). We sample periodically, store
+the delta since the previous sample per (user, protocol), and treat a decrease as a reset.
+Window queries then just SUM the deltas — no Prometheus needed.
+"""
+import json
+import os
+import sqlite3
+import time
+import urllib.request
+
+DB = "/var/lib/vpn-portal/traffic.db"
+PORTAL_CONF = "/etc/vpn-portal/portal.json"
+RETENTION = 8 * 86400  # keep ~8 days
+
+_M = json.load(open(PORTAL_CONF)).get("metrics", {})
+XRAY_URL = _M.get("xray_vars", "http://127.0.0.1:11111/debug/vars")
+HY_API = _M.get("hy_api", "http://127.0.0.1:9999")
+HY_SECRET = _M.get("hy_secret", "")
+
+
+def _get(url, headers=None):
+    try:
+        req = urllib.request.Request(url, headers=headers or {})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return json.loads(r.read().decode("utf-8", "replace"))
+    except Exception:
+        return {}
+
+
+def main():
+    os.makedirs(os.path.dirname(DB), exist_ok=True)
+    now = int(time.time())
+
+    cur = {}  # (user, proto) -> (down_cumulative, up_cumulative)
+    for name, v in _get(XRAY_URL).get("stats", {}).get("user", {}).items():
+        cur[(name, "reality")] = (int(v.get("downlink", 0)), int(v.get("uplink", 0)))
+    for name, v in _get(HY_API + "/traffic", {"Authorization": HY_SECRET}).items():
+        cur[(name, "hysteria")] = (int(v.get("rx", 0)), int(v.get("tx", 0)))  # down=rx, up=tx
+
+    con = sqlite3.connect(DB)
+    con.execute("CREATE TABLE IF NOT EXISTS samples(ts INTEGER, user TEXT, proto TEXT, down INTEGER, up INTEGER)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_ts ON samples(ts)")
+    con.execute("CREATE TABLE IF NOT EXISTS state(user TEXT, proto TEXT, ld INTEGER, lu INTEGER, PRIMARY KEY(user,proto))")
+    state = {(u, p): (ld, lu) for u, p, ld, lu in con.execute("SELECT user,proto,ld,lu FROM state")}
+
+    for key, (dc, uc) in cur.items():
+        if key in state:
+            ld, lu = state[key]
+            dd = dc - ld if dc >= ld else dc   # decrease => counter reset
+            du = uc - lu if uc >= lu else uc
+            if dd > 0 or du > 0:
+                con.execute("INSERT INTO samples VALUES(?,?,?,?,?)", (now, key[0], key[1], dd, du))
+        con.execute("INSERT INTO state(user,proto,ld,lu) VALUES(?,?,?,?) "
+                    "ON CONFLICT(user,proto) DO UPDATE SET ld=excluded.ld, lu=excluded.lu",
+                    (key[0], key[1], dc, uc))
+
+    con.execute("DELETE FROM samples WHERE ts < ?", (now - RETENTION,))
+    con.commit()
+    con.close()
+
+
+if __name__ == "__main__":
+    main()

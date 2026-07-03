@@ -1,0 +1,10 @@
+{
+  "secret": "__PORTAL_SECRET__",
+  "metrics": {
+    "node": "http://127.0.0.1:9100/metrics",
+    "xray_vars": "http://127.0.0.1:11111/debug/vars",
+    "hy_api": "http://127.0.0.1:9999",
+    "hy_secret": "__HY_STATS_SECRET__",
+    "iface": "__NET_IFACE__"
+  }
+}

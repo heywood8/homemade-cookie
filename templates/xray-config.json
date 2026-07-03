@@ -1,0 +1,42 @@
+{
+  "log": { "loglevel": "warning", "access": "/var/log/xray/access.log", "error": "/var/log/xray/error.log" },
+  "inbounds": [
+    {
+      "listen": "127.0.0.1",
+      "port": 8001,
+      "protocol": "vless",
+      "tag": "vless-reality",
+      "settings": {
+        "clients": [],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": "__REALITY_DEST__:443",
+          "xver": 0,
+          "serverNames": ["__REALITY_DEST__"],
+          "privateKey": "__REALITY_PRIVATE_KEY__",
+          "shortIds": ["__SHORT_ID__"]
+        }
+      },
+      "sniffing": { "enabled": true, "destOverride": ["http", "tls", "quic"], "routeOnly": false }
+    }
+  ],
+  "outbounds": [
+    { "protocol": "freedom", "tag": "direct", "settings": { "domainStrategy": "UseIPv4" } },
+    { "protocol": "blackhole", "tag": "block" }
+  ],
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": [ { "type": "field", "protocol": ["bittorrent"], "outboundTag": "block" } ]
+  },
+  "stats": {},
+  "metrics": { "tag": "metrics_out", "listen": "127.0.0.1:11111" },
+  "policy": {
+    "levels": { "0": { "statsUserUplink": true, "statsUserDownlink": true, "statsUserOnline": true } },
+    "system": { "statsInboundUplink": true, "statsInboundDownlink": true, "statsOutboundUplink": true, "statsOutboundDownlink": true }
+  }
+}

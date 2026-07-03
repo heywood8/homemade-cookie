@@ -1,0 +1,14 @@
+# Never commit real secrets or runtime state (this repo is public).
+# Secrets are generated on the target host at install time and live under /etc, /var, /opt.
+*.env
+server.env
+secrets*
+users.json
+traffic.db
+*.key
+*.crt
+*.pem
+
+# python
+__pycache__/
+*.pyc

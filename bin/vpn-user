@@ -1,0 +1,274 @@
+#!/usr/bin/env python3
+"""vpn-user - manage VPN users across Xray (REALITY) + Hysteria2 + the login portal.
+
+  vpn-user add  <name> [--admin] [--pass <password>]   create a user (both protocols + portal)
+  vpn-user del  <name>                                 remove a user (revokes access everywhere)
+  vpn-user list                                        list users
+  vpn-user show <name>                                 reprint a user's credentials / links / QR
+  vpn-user passwd <name> <password>                    change a user's portal password
+  vpn-user rotate <name>                               new UUID + Hysteria password (old links die)
+  vpn-user rebuild                                      re-apply configs + links from the store
+
+The first user you add becomes the store's template source. Make it an admin:
+  vpn-user add me --admin --pass 'strong-pass'
+"""
+import base64
+import datetime
+import json
+import os
+import re
+import secrets
+import subprocess
+import sys
+import uuid
+
+import yaml
+
+USERS_FILE = "/etc/vpn-portal/users.json"
+XRAY_CONF = "/usr/local/etc/xray/config.json"
+HY_CONF = "/etc/hysteria/config.yaml"
+SERVER_ENV = "/etc/vpn-portal/server.env"
+NAME_OK = re.compile(r"^[a-z0-9][a-z0-9_-]{1,31}$")
+TODAY = datetime.date.today().isoformat()
+
+
+def die(msg):
+    print("error:", msg, file=sys.stderr)
+    sys.exit(1)
+
+
+def read_env(path):
+    d = {}
+    if os.path.exists(path):
+        for line in open(path):
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                d[k] = v
+    return d
+
+
+ENV = read_env(SERVER_ENV)
+DOMAIN = ENV.get("PORTAL_DOMAIN", "<your-portal-domain>")
+
+
+def load():
+    if os.path.exists(USERS_FILE):
+        return json.load(open(USERS_FILE))
+    return {"template": {}, "users": {}}
+
+
+def save(db):
+    os.makedirs(os.path.dirname(USERS_FILE), exist_ok=True)
+    tmp = USERS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(db, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, USERS_FILE)
+    subprocess.run(["chown", "www-data:www-data", USERS_FILE], check=False)
+    os.chmod(USERS_FILE, 0o600)
+
+
+def init_template(db):
+    if db.get("template"):
+        return
+    e = read_env(SERVER_ENV)
+    if not e:
+        die(f"{SERVER_ENV} not found - run the installer first")
+    sni = e.get("REALITY_SNI", "www.apple.com")
+    db["template"] = {
+        "server_ip": e["SERVER_IP"],
+        "reality_pbk": e["REALITY_PUBLIC_KEY"],
+        "reality_sid": e["SHORT_ID_1"],
+        "reality_sni": sni,
+        "reality_fp": "chrome",
+        "hy_obfs": e["HY2_OBFS_PASSWORD"],
+        "hy_sni": sni,
+    }
+
+
+def qr_datauri(text):
+    p = subprocess.run(["qrencode", "-o", "-", "-t", "PNG", "-s", "6", "-m", "2", text],
+                       capture_output=True)
+    return "data:image/png;base64," + base64.b64encode(p.stdout).decode()
+
+
+def build_links(db, name, u):
+    t = db["template"]
+    ip = t["server_ip"]
+    u["reality_link"] = (
+        f"vless://{u['uuid']}@{ip}:443?encryption=none&flow=xtls-rprx-vision"
+        f"&security=reality&sni={t['reality_sni']}&fp={t['reality_fp']}"
+        f"&pbk={t['reality_pbk']}&sid={t['reality_sid']}&spx=%2F&type=tcp#REALITY-{name}")
+    u["hy_link"] = (
+        f"hysteria2://{name}:{u['hy_pass']}@{ip}:443/?insecure=1&sni={t['hy_sni']}"
+        f"&obfs=salamander&obfs-password={t['hy_obfs']}#HY2-{name}")
+    u["reality_qr"] = qr_datauri(u["reality_link"])
+    u["hy_qr"] = qr_datauri(u["hy_link"])
+
+
+def rebuild_xray(db):
+    conf = json.load(open(XRAY_CONF))
+    conf["inbounds"][0]["settings"]["clients"] = [
+        {"id": u["uuid"], "flow": "xtls-rprx-vision", "email": name}
+        for name, u in db["users"].items()]
+    tmp = XRAY_CONF + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(conf, f, indent=2)
+    os.replace(tmp, XRAY_CONF)
+    subprocess.run(["chown", "nobody:nogroup", XRAY_CONF], check=False)
+    os.chmod(XRAY_CONF, 0o600)
+    subprocess.run(["systemctl", "restart", "xray"], check=False)
+
+
+def rebuild_hysteria(db):
+    conf = yaml.safe_load(open(HY_CONF))
+    conf["auth"] = {"type": "userpass",
+                    "userpass": {name: u["hy_pass"] for name, u in db["users"].items()}}
+    tmp = HY_CONF + ".tmp"
+    with open(tmp, "w") as f:
+        yaml.safe_dump(conf, f, sort_keys=False, allow_unicode=True)
+    os.replace(tmp, HY_CONF)
+    subprocess.run(["systemctl", "restart", "hysteria-server"], check=False)
+
+
+def apply_all(db):
+    save(db)
+    rebuild_xray(db)
+    rebuild_hysteria(db)
+
+
+def print_user(name, u):
+    tag = " (admin)" if u.get("admin") else ""
+    print(f"\n==== user: {name}{tag} ====")
+    print(f"  Portal : https://{DOMAIN}/")
+    print(f"           login: {name}   password: {u['portal_pass']}")
+    print(f"  REALITY  : {u['reality_link']}")
+    print(f"  Hysteria2: {u['hy_link']}")
+    print("  QR (REALITY) - or open the portal under this login to get both QR codes:")
+    subprocess.run(["qrencode", "-t", "ANSIUTF8", "-m", "1", u["reality_link"]], check=False)
+
+
+def cmd_add(args):
+    admin = False
+    pw = None
+    rest = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--admin":
+            admin = True
+        elif a in ("--pass", "--password"):
+            if i + 1 >= len(args):
+                die("--pass requires a value")
+            pw = args[i + 1]
+            i += 1
+        else:
+            rest.append(a)
+        i += 1
+    if not rest:
+        die("usage: vpn-user add <name> [--admin] [--pass <password>]")
+    name = rest[0].lower()
+    if not NAME_OK.match(name):
+        die("name: 2-32 chars [a-z0-9_-], must start with a letter or digit")
+    db = load()
+    init_template(db)
+    if name in db["users"]:
+        die(f"user '{name}' already exists")
+    u = {"uuid": str(uuid.uuid4()), "hy_pass": secrets.token_hex(10),
+         "portal_pass": pw or secrets.token_urlsafe(9), "admin": admin, "created": TODAY}
+    build_links(db, name, u)
+    db["users"][name] = u
+    apply_all(db)
+    print(f"Added user '{name}'. Services restarted.")
+    print_user(name, u)
+
+
+def cmd_del(args):
+    if not args:
+        die("usage: vpn-user del <name>")
+    name = args[0].lower()
+    db = load()
+    if name not in db["users"]:
+        die(f"no such user: {name}")
+    admins = [n for n, x in db["users"].items() if x.get("admin")]
+    if db["users"][name].get("admin") and len(admins) <= 1:
+        die("cannot remove the last admin")
+    if len(db["users"]) <= 1:
+        die("cannot remove the last user (Xray needs at least one client)")
+    del db["users"][name]
+    apply_all(db)
+    print(f"User '{name}' removed; access revoked (both protocols + portal).")
+
+
+def cmd_list(args):
+    db = load()
+    if not db["users"]:
+        print("no users - run: vpn-user add <name> --admin")
+        return
+    print(f"{'NAME':<16}{'ROLE':<8}{'CREATED':<12}UUID")
+    for name, u in db["users"].items():
+        role = "admin" if u.get("admin") else "user"
+        print(f"{name:<16}{role:<8}{u.get('created',''):<12}{u['uuid']}")
+
+
+def cmd_show(args):
+    if not args:
+        die("usage: vpn-user show <name>")
+    name = args[0].lower()
+    db = load()
+    if name not in db["users"]:
+        die(f"no such user: {name}")
+    print_user(name, db["users"][name])
+
+
+def cmd_passwd(args):
+    if len(args) < 2:
+        die("usage: vpn-user passwd <name> <new_password>")
+    name = args[0].lower()
+    db = load()
+    if name not in db["users"]:
+        die(f"no such user: {name}")
+    db["users"][name]["portal_pass"] = args[1]
+    save(db)  # portal reads users.json live - no restart, VPN untouched
+    print(f"Portal password for '{name}' changed.")
+
+
+def cmd_rotate(args):
+    if not args:
+        die("usage: vpn-user rotate <name>")
+    name = args[0].lower()
+    db = load()
+    if name not in db["users"]:
+        die(f"no such user: {name}")
+    u = db["users"][name]
+    u["uuid"] = str(uuid.uuid4())
+    u["hy_pass"] = secrets.token_hex(10)
+    build_links(db, name, u)
+    apply_all(db)
+    print(f"VPN access for '{name}' rotated: new UUID + Hysteria password. Old links no longer work.")
+    print_user(name, u)
+
+
+def cmd_rebuild(args):
+    db = load()
+    if not db.get("template"):
+        die("store not initialized - run vpn-user add first")
+    for name, u in db["users"].items():
+        build_links(db, name, u)
+    apply_all(db)
+    print(f"Rebuilt: {len(db['users'])} users, configs applied, services restarted.")
+
+
+def main():
+    if os.geteuid() != 0:
+        die("run as root")
+    cmds = {"add": cmd_add, "del": cmd_del, "remove": cmd_del, "list": cmd_list,
+            "show": cmd_show, "passwd": cmd_passwd, "rotate": cmd_rotate, "rebuild": cmd_rebuild}
+    if len(sys.argv) < 2 or sys.argv[1] not in cmds:
+        print(__doc__)
+        sys.exit(0 if len(sys.argv) < 2 else 1)
+    cmds[sys.argv[1]](sys.argv[2:])
+
+
+if __name__ == "__main__":
+    main()
