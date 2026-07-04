@@ -3,7 +3,11 @@
 # homemade-cookie - one-shot installer for a censorship-resistant VPN + web portal.
 #
 #   VLESS + XTLS-Vision + REALITY (TCP 443)   -- primary, looks like HTTPS to a real site
-#   Hysteria2 (QUIC/UDP 443) + Salamander     -- backup
+#   Hysteria2 (QUIC/UDP 443) + Salamander     -- backup, punches through UDP throttling
+#   VLESS + WebSocket + TLS (CDN fallback)    -- for when an ISP blocks direct TCP/443 to this
+#                                                 server's IP or fingerprints REALITY/QUIC; put
+#                                                 PORTAL_DOMAIN behind a CDN (e.g. Cloudflare)
+#                                                 and this rides ordinary HTTPS to its IPs
 #   nginx SNI router                          -- website + VPN share port 443 by domain name
 #   form-login portal (disguised)             -- each user sees only their own QR/links
 #   node_exporter + SQLite traffic history    -- monitoring, no Prometheus needed
@@ -16,7 +20,8 @@
 #
 # Options (env vars):
 #   PORTAL_DOMAIN  (required)  hostname the portal is served on
-#   REALITY_DEST   (default www.apple.com)  cover site the VPN camouflages as
+#   REALITY_DEST   (default www.twitch.tv)  cover site the VPN camouflages as (avoid apple.com -
+#                  Apple's own ASN makes REALITY+its-cert mismatch detectable in some networks)
 #   NET_IFACE      (auto)      network interface for the traffic graph
 #   SERVER_IP      (auto)      public IPv4 (used to build client links)
 #   ENABLE_UFW     (0)         set to 1 to configure+enable ufw (allows 22,80,443)
@@ -29,7 +34,7 @@ log() { echo -e "\n>>> $*"; }
 
 [ "$(id -u)" -eq 0 ] || die "run as root (sudo)"
 : "${PORTAL_DOMAIN:?set PORTAL_DOMAIN, e.g. PORTAL_DOMAIN=connect.example.com}"
-REALITY_DEST="${REALITY_DEST:-www.apple.com}"
+REALITY_DEST="${REALITY_DEST:-www.twitch.tv}"
 NET_IFACE="${NET_IFACE:-$(ip route show default 2>/dev/null | awk '/default/{print $5; exit}')}"
 SERVER_IP="${SERVER_IP:-$(curl -fsS4 https://api.ipify.org 2>/dev/null || true)}"
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -94,6 +99,7 @@ SHORT_ID=$(openssl rand -hex 8)
 OBFS_PASS=$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | cut -c1-24)
 HY_SECRET=$(openssl rand -hex 16)
 PORTAL_SECRET=$(openssl rand -hex 32)
+WS_CDN_PATH="/$(openssl rand -hex 4)/$(openssl rand -hex 6)"
 
 # Hysteria self-signed cert (CN = cover site)
 openssl ecparam -genkey -name prime256v1 -out /etc/hysteria/server.key 2>/dev/null
@@ -110,14 +116,16 @@ chmod 600 /etc/nginx/ssl/origin.key
 # ---- 7. render configs from templates ----
 log "Writing configs"
 sed -e "s|__REALITY_PRIVATE_KEY__|$R_PRIV|" -e "s|__REALITY_DEST__|$REALITY_DEST|g" \
-    -e "s|__SHORT_ID__|$SHORT_ID|" "$SRC/templates/xray-config.json" > /usr/local/etc/xray/config.json
+    -e "s|__SHORT_ID__|$SHORT_ID|" -e "s|__WS_CDN_PATH__|$WS_CDN_PATH|g" \
+    -e "s|__DOMAIN__|$PORTAL_DOMAIN|g" "$SRC/templates/xray-config.json" > /usr/local/etc/xray/config.json
 chown nobody:nogroup /usr/local/etc/xray/config.json; chmod 600 /usr/local/etc/xray/config.json
 
 sed -e "s|__OBFS_PASSWORD__|$OBFS_PASS|" -e "s|__HY_STATS_SECRET__|$HY_SECRET|" \
     -e "s|__MASQUERADE_URL__|https://$REALITY_DEST/|" "$SRC/templates/hysteria-config.yaml" > /etc/hysteria/config.yaml
 
 sed -e "s|__DOMAIN__|$PORTAL_DOMAIN|g" "$SRC/templates/nginx-sni-router.conf" > /etc/nginx/stream.d/sni-router.conf
-sed -e "s|__DOMAIN__|$PORTAL_DOMAIN|g" "$SRC/templates/nginx-site.conf" > /etc/nginx/sites-available/vpn-portal.conf
+sed -e "s|__DOMAIN__|$PORTAL_DOMAIN|g" -e "s|__WS_CDN_PATH__|$WS_CDN_PATH|g" \
+    "$SRC/templates/nginx-site.conf" > /etc/nginx/sites-available/vpn-portal.conf
 ln -sf /etc/nginx/sites-available/vpn-portal.conf /etc/nginx/sites-enabled/vpn-portal.conf
 rm -f /etc/nginx/sites-enabled/default
 
@@ -132,6 +140,7 @@ REALITY_PUBLIC_KEY=$R_PUB
 SHORT_ID_1=$SHORT_ID
 REALITY_SNI=$REALITY_DEST
 HY2_OBFS_PASSWORD=$OBFS_PASS
+WS_CDN_PATH=$WS_CDN_PATH
 EOF
 
 # nginx stream{} include (top level, once)

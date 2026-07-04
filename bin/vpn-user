@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""vpn-user - manage VPN users across Xray (REALITY) + Hysteria2 + the login portal.
+"""vpn-user - manage VPN users across Xray (REALITY + WS-CDN) + Hysteria2 + the login portal.
 
-  vpn-user add  <name> [--admin] [--pass <password>]   create a user (both protocols + portal)
+  vpn-user add  <name> [--admin] [--pass <password>]   create a user (all transports + portal)
   vpn-user del  <name>                                 remove a user (revokes access everywhere)
   vpn-user list                                        list users
   vpn-user show <name>                                 reprint a user's credentials / links / QR
@@ -20,6 +20,7 @@ import re
 import secrets
 import subprocess
 import sys
+import urllib.parse
 import uuid
 
 import yaml
@@ -74,15 +75,17 @@ def init_template(db):
     e = read_env(SERVER_ENV)
     if not e:
         die(f"{SERVER_ENV} not found - run the installer first")
-    sni = e.get("REALITY_SNI", "www.apple.com")
+    sni = e.get("REALITY_SNI", "www.twitch.tv")
     db["template"] = {
         "server_ip": e["SERVER_IP"],
+        "domain": DOMAIN,
         "reality_pbk": e["REALITY_PUBLIC_KEY"],
         "reality_sid": e["SHORT_ID_1"],
         "reality_sni": sni,
         "reality_fp": "chrome",
         "hy_obfs": e["HY2_OBFS_PASSWORD"],
         "hy_sni": sni,
+        "ws_cdn_path": e.get("WS_CDN_PATH", ""),
     }
 
 
@@ -95,6 +98,7 @@ def qr_datauri(text):
 def build_links(db, name, u):
     t = db["template"]
     ip = t["server_ip"]
+    domain = t.get("domain", DOMAIN)
     u["reality_link"] = (
         f"vless://{u['uuid']}@{ip}:443?encryption=none&flow=xtls-rprx-vision"
         f"&security=reality&sni={t['reality_sni']}&fp={t['reality_fp']}"
@@ -102,15 +106,29 @@ def build_links(db, name, u):
     u["hy_link"] = (
         f"hysteria2://{name}:{u['hy_pass']}@{ip}:443/?insecure=1&sni={t['hy_sni']}"
         f"&obfs=salamander&obfs-password={t['hy_obfs']}#HY2-{name}")
+    ws_path = t.get("ws_cdn_path", "")
+    u["ws_link"] = (
+        f"vless://{u['uuid']}@{domain}:443?encryption=none&security=tls&sni={domain}"
+        f"&fp=chrome&type=ws&path={urllib.parse.quote(ws_path, safe='')}"
+        f"&host={domain}#WS-CDN-{name}") if ws_path else ""
     u["reality_qr"] = qr_datauri(u["reality_link"])
     u["hy_qr"] = qr_datauri(u["hy_link"])
+    u["ws_qr"] = qr_datauri(u["ws_link"]) if ws_path else ""
 
 
 def rebuild_xray(db):
     conf = json.load(open(XRAY_CONF))
-    conf["inbounds"][0]["settings"]["clients"] = [
-        {"id": u["uuid"], "flow": "xtls-rprx-vision", "email": name}
-        for name, u in db["users"].items()]
+    for inbound in conf["inbounds"]:
+        if inbound.get("protocol") != "vless":
+            continue
+        if inbound.get("tag") == "vless-reality":
+            inbound["settings"]["clients"] = [
+                {"id": u["uuid"], "flow": "xtls-rprx-vision", "email": name}
+                for name, u in db["users"].items()]
+        else:
+            # WS-CDN (and any other non-REALITY inbound): no flow - Vision needs raw TCP.
+            inbound["settings"]["clients"] = [
+                {"id": u["uuid"], "email": name} for name, u in db["users"].items()]
     tmp = XRAY_CONF + ".tmp"
     with open(tmp, "w") as f:
         json.dump(conf, f, indent=2)
@@ -144,7 +162,11 @@ def print_user(name, u):
     print(f"           login: {name}   password: {u['portal_pass']}")
     print(f"  REALITY  : {u['reality_link']}")
     print(f"  Hysteria2: {u['hy_link']}")
-    print("  QR (REALITY) - or open the portal under this login to get both QR codes:")
+    if u.get("ws_link"):
+        print(f"  WS-CDN   : {u['ws_link']}")
+        print("             (fallback - use if the ISP blocks REALITY/Hysteria2 directly;")
+        print(f"              requires {DOMAIN} to be fronted by a CDN, e.g. Cloudflare)")
+    print("  QR (REALITY) - or open the portal under this login to get all QR codes:")
     subprocess.run(["qrencode", "-t", "ANSIUTF8", "-m", "1", u["reality_link"]], check=False)
 
 
@@ -197,7 +219,7 @@ def cmd_del(args):
         die("cannot remove the last user (Xray needs at least one client)")
     del db["users"][name]
     apply_all(db)
-    print(f"User '{name}' removed; access revoked (both protocols + portal).")
+    print(f"User '{name}' removed; access revoked (all transports + portal).")
 
 
 def cmd_list(args):
