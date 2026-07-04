@@ -93,6 +93,25 @@ sampler (`vpn-traffic-collect`, ~15 MB/day, 8-day retention). No Prometheus requ
 - Metrics endpoints (node_exporter, Xray, Hysteria stats) listen on `127.0.0.1` only.
 - The portal login page is disguised (see `LOGIN_PAGE` in `portal/app.py`); customize freely.
 
+## Networking & ops notes
+
+- **IPv6 is deliberately black-holed.** The Xray `direct` outbound uses `domainStrategy:
+  UseIPv4`, and a routing rule sends all IPv6 destinations (`"ip": ["::/0"]`) to `block`. Most
+  VPS get only IPv4 + link-local, with no global IPv6 route; without this rule, every
+  dual-stack site and HTTP/3 (QUIC) request a client tries over IPv6 first is forwarded into a
+  dead route and **stalls until it times out** before falling back to IPv4 — felt as a slow,
+  unstable VPN. Blocking `::/0` makes those attempts fail instantly so clients use IPv4.
+  *If your server has working global IPv6*, delete that rule (and switch the outbound to
+  `UseIP`) to serve IPv6 natively.
+- **Xray config ownership.** `xray.service` runs as `User=nobody`, and
+  `/usr/local/etc/xray/config.json` is mode `600` — so it **must** be owned `nobody:nogroup`.
+  `install.sh` and `vpn-user` already re-apply this on every write. If you ever hand-edit the
+  file as root, restore it or Xray won't start (`permission denied`, exit 23):
+  ```bash
+  chown nobody:nogroup /usr/local/etc/xray/config.json && chmod 600 /usr/local/etc/xray/config.json
+  xray -test -config /usr/local/etc/xray/config.json && systemctl restart xray
+  ```
+
 ## Layout
 
 ```

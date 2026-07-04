@@ -31,7 +31,10 @@
   ],
   "routing": {
     "domainStrategy": "IPIfNonMatch",
-    "rules": [ { "type": "field", "protocol": ["bittorrent"], "outboundTag": "block" } ]
+    "rules": [
+      { "type": "field", "ip": ["::/0"], "outboundTag": "block" },
+      { "type": "field", "protocol": ["bittorrent"], "outboundTag": "block" }
+    ]
   },
   "stats": {},
   "metrics": { "tag": "metrics_out", "listen": "127.0.0.1:11111" },
