@@ -30,7 +30,7 @@
     { "protocol": "blackhole", "tag": "block" }
   ],
   "routing": {
-    "domainStrategy": "IPIfNonMatch",
+    "domainStrategy": "AsIs",
     "rules": [
       { "type": "field", "ip": ["::/0"], "outboundTag": "block" },
       { "type": "field", "protocol": ["bittorrent"], "outboundTag": "block" }
