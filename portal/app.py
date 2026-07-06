@@ -278,7 +278,7 @@ PERSONAL_PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8">
 .proto .info{flex:1;min-width:240px}
 h2{font-size:1.12rem;margin:.1rem 0 .4rem}
 .pill{font-size:.68rem;font-weight:600;padding:2px 9px;border-radius:999px;vertical-align:middle}
-.pill.p{background:var(--acc);color:#fff}.pill.b{background:#8a7256;color:#fff}
+.pill.p{background:var(--acc);color:#fff}.pill.b{background:#8a7256;color:#fff}.pill.f{background:#2a7ab0;color:#fff}
 .link{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.74rem;word-break:break-all;background:var(--bg);border:1px solid var(--line);padding:8px 10px;border-radius:9px;margin:.4rem 0;max-height:96px;overflow:auto}
 button.copy{cursor:pointer;background:linear-gradient(180deg,var(--acc),var(--acc2));color:#fff;border:0;padding:8px 16px;border-radius:9px;font-size:.9rem;font-weight:600}
 ol{padding-left:1.15rem}li{margin:.4rem 0}
@@ -288,7 +288,7 @@ footer{text-align:center;color:var(--mut);font-size:.8rem;margin-top:26px}
 <div class="topbar"><div><div class="who">🍪 Доступ к VPN</div><div class="sub">пользователь: <b>__NAME__</b></div></div>
 <div class="nav">__NAV__<a class="out" href="/logout">Выйти ✕</a></div></div>
 
-<div class="note"><b>Приложение: Hiddify</b> — хранит оба профиля и переключается на рабочий. Добавьте <u>оба</u>. По умолчанию — <b>REALITY</b>; если режут скорость — <b>Hysteria2</b>.</div>
+<div class="note"><b>Приложение: Hiddify</b> — хранит все профили и переключается на рабочий. Добавьте их все. По умолчанию — <b>REALITY</b>; если режут скорость — <b>Hysteria2</b>; если оба не подключаются (провайдер блокирует напрямую) — <b>WS-CDN</b>.</div>
 
 <div class="tabs"><div class="tab active" data-t="mobile">📱 Телефон</div><div class="tab" data-t="desktop">💻 Компьютер</div></div>
 
@@ -296,7 +296,7 @@ footer{text-align:center;color:var(--mut);font-size:.8rem;margin-top:26px}
   <div class="card"><ol>
     <li>Установите <b>Hiddify</b> — <a href="https://play.google.com/store/apps/details?id=app.hiddify.com">Google&nbsp;Play</a> или <a href="https://github.com/hiddify/hiddify-app/releases">GitHub</a>.</li>
     <li><b>Отсканируйте QR</b> в Hiddify (+ → Сканировать) или нажмите <b>Копировать</b> → + → Импорт из буфера.</li>
-    <li>Добавьте оба профиля, подключайтесь в режиме <b>Авто</b>.</li>
+    <li>Добавьте профили, подключайтесь в режиме <b>Авто</b>.</li>
   </ol></div>
   <div class="card"><div class="proto">
     <div class="qr"><img alt="QR REALITY" src="__RQR__"></div>
@@ -308,20 +308,22 @@ footer{text-align:center;color:var(--mut);font-size:.8rem;margin-top:26px}
     <div class="info"><h2>Hysteria2 <span class="pill b">РЕЗЕРВ</span></h2>
       <div class="link" id="l2">__HLINK__</div><button class="copy" data-c="l2">Скопировать ссылку ②</button></div>
   </div></div>
+  __WSCARD_MOBILE__
 </div>
 
 <div class="panel" id="desktop">
   <div class="card"><ol>
     <li>Скачайте <b>Hiddify</b> для Windows: <a href="https://github.com/hiddify/hiddify-app/releases">GitHub releases</a> → <code>Hiddify-Windows-Setup-x64.exe</code>.</li>
-    <li>Скопируйте ссылку, затем Hiddify: <b>Профили → Новый → Из буфера обмена</b>. Добавьте обе.</li>
+    <li>Скопируйте ссылку, затем Hiddify: <b>Профили → Новый → Из буфера обмена</b>. Добавьте их все.</li>
   </ol></div>
   <div class="card"><h2>① REALITY <span class="pill p">ОСНОВНОЙ</span></h2>
     <div class="link" id="l3">__RLINK__</div><button class="copy" data-c="l3">Скопировать ссылку ①</button></div>
   <div class="card"><h2>② Hysteria2 <span class="pill b">РЕЗЕРВ</span></h2>
     <div class="link" id="l4">__HLINK__</div><button class="copy" data-c="l4">Скопировать ссылку ②</button></div>
+  __WSCARD_DESKTOP__
 </div>
 
-<footer>Оба протокола выглядят как обычный HTTPS к apple.com — определить или заблокировать нечего.</footer>
+<footer>Все профили выглядят как обычный HTTPS к настоящим сайтам — определить или заблокировать нечего.</footer>
 </div>
 <script>
 document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));t.classList.add('active');document.getElementById(t.dataset.t).classList.add('active');});
@@ -524,9 +526,25 @@ class Handler(BaseHTTPRequestHandler):
         nav = '<a href="/monitor">📊 Мониторинг</a>' if user.get("admin") else ""
         rlink = html.escape(user.get("reality_link", "")).replace("@", "&#64;")
         hlink = html.escape(user.get("hy_link", "")).replace("@", "&#64;")
+        wlink = html.escape(user.get("ws_link", "")).replace("@", "&#64;")
+        wqr = user.get("ws_qr", "")
+        ws_mobile = ws_desktop = ""
+        if wlink and wqr:
+            ws_mobile = (
+                '<div class="card"><div class="proto">'
+                '<div class="qr"><img alt="QR WS-CDN" src="' + wqr + '"></div>'
+                '<div class="info"><h2>WS-CDN <span class="pill f">ЗАПАСНОЙ</span></h2>'
+                '<div class="link" id="l5">' + wlink + '</div>'
+                '<button class="copy" data-c="l5">Скопировать ссылку ③</button></div>'
+                '</div></div>')
+            ws_desktop = (
+                '<div class="card"><h2>③ WS-CDN <span class="pill f">ЗАПАСНОЙ</span></h2>'
+                '<div class="link" id="l6">' + wlink + '</div>'
+                '<button class="copy" data-c="l6">Скопировать ссылку ③</button></div>')
         page = (PERSONAL_PAGE.replace("__CSS__", WARM_CSS).replace("__NAME__", html.escape(name)).replace("__NAV__", nav)
                 .replace("__RQR__", user.get("reality_qr", "")).replace("__HQR__", user.get("hy_qr", ""))
-                .replace("__RLINK__", rlink).replace("__HLINK__", hlink))
+                .replace("__RLINK__", rlink).replace("__HLINK__", hlink)
+                .replace("__WSCARD_MOBILE__", ws_mobile).replace("__WSCARD_DESKTOP__", ws_desktop))
         self._send(200, page.encode("utf-8"))
 
     def do_POST(self):

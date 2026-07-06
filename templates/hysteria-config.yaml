@@ -38,6 +38,15 @@ bandwidth:
 
 ignoreClientBandwidth: false
 
+# Force IPv4 egress. Most VPS get IPv4 + link-local only, with no global IPv6 route; without
+# this, Hysteria tries IPv6 for dual-stack destinations and those connections hang until they
+# time out client-side (see the same fix on the Xray side: routing.rules ip=["::/0"]).
+outbounds:
+  - name: v4only
+    type: direct
+    direct:
+      mode: 4
+
 # Per-user traffic stats (read by the portal monitor). Localhost only.
 trafficStats:
   listen: 127.0.0.1:9999

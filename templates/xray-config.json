@@ -23,6 +23,22 @@
         }
       },
       "sniffing": { "enabled": true, "destOverride": ["http", "tls", "quic"], "routeOnly": false }
+    },
+    {
+      "listen": "127.0.0.1",
+      "port": 8002,
+      "protocol": "vless",
+      "tag": "vless-ws-cdn",
+      "settings": {
+        "clients": [],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "none",
+        "wsSettings": { "path": "__WS_CDN_PATH__", "host": "__DOMAIN__" }
+      },
+      "sniffing": { "enabled": true, "destOverride": ["http", "tls", "quic"], "routeOnly": false }
     }
   ],
   "outbounds": [
@@ -30,7 +46,7 @@
     { "protocol": "blackhole", "tag": "block" }
   ],
   "routing": {
-    "domainStrategy": "IPIfNonMatch",
+    "domainStrategy": "AsIs",
     "rules": [
       { "type": "field", "ip": ["::/0"], "outboundTag": "block" },
       { "type": "field", "protocol": ["bittorrent"], "outboundTag": "block" }
